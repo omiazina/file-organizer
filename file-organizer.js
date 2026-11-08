@@ -1,5 +1,6 @@
 import Scanner from './lib/scanner.js';
 import DuplicateFinder from './lib/duplicates.js';
+import Organizer from './lib/organizer.js';
 
 function handleFsError(error, target) {
   if (error.code === 'ENOENT') {
@@ -139,24 +140,136 @@ async function findDuplicates(dir) {
   }
 }
 
-async function main() {
-  const command = process.argv[2];
-  const targetDir = process.argv[3];
+async function organizeDir(sourceDir, outputDir) {
+  const organizer = new Organizer();
 
-  if (!command || !targetDir) {
-    console.error('Usage: node file-organizer.js <command> <directory>');
+  organizer.on('organize-start', data => {
+    console.log(`📦 Organizing: ${data.sourceDir}`);
+    console.log(`Target: ${data.outputDir}`);
+    console.log(`\nCreating folders...`);
+  });
+
+  organizer.on('folder-created', data => {
+    console.log(`✓ ${data.category}/`);
+  });
+
+  organizer.on('copy-start', () => {
+    // progress is updated on copy-complete
+  });
+
+  organizer.on('copy-complete', data => {
+    if (data.currentFile === 1) {
+      console.log(`\nCopying files...`);
+    }
+    process.stdout.write(
+      `\r${drawProgressBar(data.currentFile, data.totalFiles)}`
+    );
+  });
+
+  organizer.on('copy-error', data => {
+    console.error(
+      `\n❌ Error copying ${data.sourcePath}: ${data.error.message}`
+    );
+  });
+
+  organizer.on('organize-complete', data => {
+    console.log(`\n\n✅ Organization complete!\n`);
+    console.log(`Summary:`);
+
+    for (const [category, info] of Object.entries(data.summary)) {
+      console.log(
+        `${category}: ${info.count} files → ${info.path}/`
+      );
+    }
+
+    console.log(
+      `\nTotal copied: ${data.totalCopied} files (${formatSize(data.totalSize)})`
+    );
+  });
+
+  try {
+    await organizer.organize(sourceDir, outputDir);
+  } catch (error) {
+    handleFsError(error, sourceDir);
+  }
+}
+
+function parseArgs(argv) {
+  const args = argv.slice(2);
+  const command = args[0];
+  const positional = [];
+  const flags = {};
+
+  for (let i = 1; i < args.length; i++) {
+    const arg = args[i];
+
+    if (arg === '--output' || arg === '--older-than') {
+      flags[arg] = args[i + 1];
+      i++;
+      continue;
+    }
+
+    if (arg === '--confirm') {
+      flags[arg] = true;
+      continue;
+    }
+
+    if (arg.startsWith('--')) {
+      console.error(`Unknown flag: ${arg}`);
+      process.exit(1);
+    }
+
+    positional.push(arg);
+  }
+
+  return { command, positional, flags };
+}
+
+async function main() {
+  const { command, positional, flags } = parseArgs(process.argv);
+
+  if (!command) {
+    console.error(
+      'Usage: node file-organizer.js <scan|duplicates|organize> <directory> [options]'
+    );
     process.exit(1);
   }
 
   switch (command) {
-    case 'scan':
+    case 'scan': {
+      const targetDir = positional[0];
+      if (!targetDir) {
+        console.error('Usage: node file-organizer.js scan <directory>');
+        process.exit(1);
+      }
       await scanDir(targetDir);
       break;
-    case 'duplicates':
+    }
+    case 'duplicates': {
+      const targetDir = positional[0];
+      if (!targetDir) {
+        console.error('Usage: node file-organizer.js duplicates <directory>');
+        process.exit(1);
+      }
       await findDuplicates(targetDir);
       break;
+    }
+    case 'organize': {
+      const sourceDir = positional[0];
+      const outputDir = flags['--output'];
+
+      if (!sourceDir || !outputDir) {
+        console.error(
+          'Usage: node file-organizer.js organize <source> --output <target>'
+        );
+        process.exit(1);
+      }
+
+      await organizeDir(sourceDir, outputDir);
+      break;
+    }
     default:
-      console.error('Invalid command. Use: scan, duplicates');
+      console.error('Invalid command. Use: scan, duplicates, or organize');
       process.exit(1);
   }
 }
