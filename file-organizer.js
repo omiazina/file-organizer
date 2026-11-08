@@ -1,6 +1,7 @@
 import Scanner from './lib/scanner.js';
 import DuplicateFinder from './lib/duplicates.js';
 import Organizer from './lib/organizer.js';
+import Cleanup from './lib/cleanup.js';
 
 function handleFsError(error, target) {
   if (error.code === 'ENOENT') {
@@ -194,6 +195,94 @@ async function organizeDir(sourceDir, outputDir) {
   }
 }
 
+function printCleanupFileList(files, totalSize) {
+  if (files.length === 0) {
+    console.log(`Found 0 files to delete.`);
+    return;
+  }
+
+  console.log(`Found ${files.length} files to delete:\n`);
+  console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+
+  const previewLimit = 3;
+  const preview = files.slice(0, previewLimit);
+
+  for (const file of preview) {
+    const modifiedDate = file.modifiedAt.toISOString().slice(0, 10);
+    console.log(`${file.name}`);
+    console.log(`Size: ${formatSize(file.size)}`);
+    console.log(
+      `Modified: ${Math.floor(file.daysOld)} days ago (${modifiedDate})\n`
+    );
+  }
+
+  if (files.length > previewLimit) {
+    console.log(`... (${files.length - previewLimit} more files)`);
+  }
+
+  console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+  console.log(`\nTotal: ${files.length} files (${formatSize(totalSize)})`);
+}
+
+async function cleanupDir(dir, olderThanDays, confirm) {
+  try {
+    const finder = new Cleanup();
+    let foundFiles = [];
+    let totalSize = 0;
+
+    finder.on('cleanup-start', data => {
+      console.log(`🧹 Cleanup: ${data.directory}`);
+      console.log(
+        `Looking for files older than ${data.olderThanDays} days...\n`
+      );
+    });
+
+    finder.on('cleanup-complete', data => {
+      foundFiles = data.files;
+      totalSize = data.totalSize;
+      printCleanupFileList(data.files, data.totalSize);
+    });
+
+    await finder.cleanup(dir, olderThanDays, false);
+
+    if (foundFiles.length === 0) {
+      return;
+    }
+
+    if (!confirm) {
+      console.log(
+        `\n⚠️ DRY RUN MODE: No files were deleted.\nTo actually delete these files, run with --confirm flag.`
+      );
+      return;
+    }
+
+    console.log(
+      `\n⚠️ DELETING ${foundFiles.length} files (${formatSize(totalSize)}). This action cannot be undone!\n`
+    );
+
+    const deleter = new Cleanup();
+
+    deleter.on('file-deleted', data => {
+      if (data.currentFile === 1) {
+        console.log(`Deleting...`);
+      }
+      process.stdout.write(
+        `\r${drawProgressBar(data.currentFile, data.totalFiles)}`
+      );
+    });
+
+    deleter.on('cleanup-complete', data => {
+      console.log(
+        `\n\n✅ Cleanup complete! Deleted: ${data.files.length} files (${formatSize(data.totalSize)} freed)`
+      );
+    });
+
+    await deleter.cleanup(dir, olderThanDays, true);
+  } catch (error) {
+    handleFsError(error, dir);
+  }
+}
+
 function parseArgs(argv) {
   const args = argv.slice(2);
   const command = args[0];
@@ -230,7 +319,7 @@ async function main() {
 
   if (!command) {
     console.error(
-      'Usage: node file-organizer.js <scan|duplicates|organize> <directory> [options]'
+      'Usage: node file-organizer.js <scan|duplicates|organize|cleanup> <directory> [options]'
     );
     process.exit(1);
   }
@@ -268,8 +357,31 @@ async function main() {
       await organizeDir(sourceDir, outputDir);
       break;
     }
+    case 'cleanup': {
+      const targetDir = positional[0];
+      const olderThan = flags['--older-than'];
+      const confirm = Boolean(flags['--confirm']);
+
+      if (!targetDir || olderThan === undefined) {
+        console.error(
+          'Usage: node file-organizer.js cleanup <directory> --older-than <days> [--confirm]'
+        );
+        process.exit(1);
+      }
+
+      const olderThanDays = Number(olderThan);
+      if (!Number.isFinite(olderThanDays) || olderThanDays < 0) {
+        console.error('❌ Error: --older-than must be a non-negative number');
+        process.exit(1);
+      }
+
+      await cleanupDir(targetDir, olderThanDays, confirm);
+      break;
+    }
     default:
-      console.error('Invalid command. Use: scan, duplicates, or organize');
+      console.error(
+        'Invalid command. Use: scan, duplicates, organize, or cleanup'
+      );
       process.exit(1);
   }
 }
