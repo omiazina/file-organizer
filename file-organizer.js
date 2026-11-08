@@ -1,4 +1,16 @@
 import Scanner from './lib/scanner.js';
+import DuplicateFinder from './lib/duplicates.js';
+
+function handleFsError(error, target) {
+  if (error.code === 'ENOENT') {
+    console.error(`❌ Error: Directory not found: ${target}`);
+  } else if (error.code === 'EACCES') {
+    console.error(`❌ Error: Permission denied: ${target}`);
+  } else {
+    console.error(`❌ Unexpected error: ${error.message}`);
+  }
+  process.exit(1);
+}
 
 async function scanDir(dir) {
   const scanner = new Scanner();
@@ -69,7 +81,62 @@ async function scanDir(dir) {
     );
   });
 
-  await scanner.scan(dir);
+  try {
+    await scanner.scan(dir);
+  } catch (error) {
+    handleFsError(error, dir);
+  }
+}
+
+async function findDuplicates(dir) {
+  const finder = new DuplicateFinder();
+
+  finder.on('search-start', data => {
+    console.log(`🔍 Searching for duplicates in: ${data.directory}`);
+  });
+
+  finder.on('file-processed', data => {
+    process.stdout.write(
+      `\rCalculating hashes... ${drawProgressBar(data.currentFile, data.totalFiles)} files`
+    );
+  });
+
+  finder.on('duplicates-found', data => {
+    console.log('');
+
+    if (data.groups.length === 0) {
+      console.log('\nNo duplicates found.');
+      return;
+    }
+
+    console.log(
+      `\nFound ${data.groups.length} duplicate groups (${formatSize(data.totalWasted)} wasted):\n`
+    );
+
+    data.groups.forEach((group, index) => {
+      console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+      console.log(
+        `Group ${index + 1} (${group.copies.length} copies, ${formatSize(group.size)} each):`
+      );
+      console.log(`SHA-256: ${group.hash.slice(0, 12)}...`);
+      console.log('');
+
+      for (const copy of group.copies) {
+        console.log(`📄 ${copy.path}`);
+      }
+
+      console.log(`\nWasted space: ${formatSize(group.wasted)}\n`);
+    });
+
+    console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    console.log(`💾 Total wasted space: ${formatSize(data.totalWasted)}`);
+  });
+
+  try {
+    await finder.find(dir);
+  } catch (error) {
+    handleFsError(error, dir);
+  }
 }
 
 async function main() {
@@ -85,11 +152,11 @@ async function main() {
     case 'scan':
       await scanDir(targetDir);
       break;
+    case 'duplicates':
+      await findDuplicates(targetDir);
+      break;
     default:
-      console.error(
-        'Invalid command. Use: scan'
-        // 'Invalid command. Use: scan, duplicates, organize, or cleanup'
-      );
+      console.error('Invalid command. Use: scan, duplicates');
       process.exit(1);
   }
 }
@@ -105,6 +172,9 @@ function formatSize(bytes) {
 }
 
 function drawProgressBar(current, total, width = 20) {
+  if (total === 0) {
+    return `${'░'.repeat(width)} 0/0`;
+  }
   const percentage = current / total;
   const filled = Math.round(percentage * width);
   const bar = '█'.repeat(filled) + '░'.repeat(width - filled);
